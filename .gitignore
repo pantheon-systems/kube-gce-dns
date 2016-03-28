@@ -1,0 +1,10 @@
+*.crt
+*.cert
+*.csr
+*.pem
+*.key
+env
+coverage.out
+
+vendor/**
+!vendor/manifest
