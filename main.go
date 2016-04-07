@@ -19,24 +19,3 @@ import "github.com/pantheon-systems/kube-gce-dns/cmd"
 func main() {
 	cmd.Execute()
 }
-
-/*
- package main
-
-import (
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
-)
-
-func main() {
-	client := unversioned.NewOrDie(&Config{Host: "http://127.0.0.1:8001"})
-
-	pods, err := client.Pods(api.NamespaceDefault).List(labels.Everything(), fields.Everything())
-	if err != nil {
-		log.fatal(err)
-	}
-
-}
-*/

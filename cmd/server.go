@@ -1,4 +1,4 @@
-// Copyright © 2016 NAME HERE <EMAIL ADDRESS>
+// Copyright © 2016 Jesse Nelson <spheromak@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,105 +16,154 @@ package cmd
 
 import (
 	"log"
+	"time"
 
+	"golang.org/x/net/context"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/compute/v1"
+
+	"github.com/davecgh/go-spew/spew"
 	"github.com/spf13/cobra"
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/util/wait"
 
+	kapi "k8s.io/kubernetes/pkg/api"
 	kcache "k8s.io/kubernetes/pkg/client/cache"
-	"k8s.io/kubernetes/pkg/client/restclient"
 	kclient "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
+	kselector "k8s.io/kubernetes/pkg/fields"
+
 	kframework "k8s.io/kubernetes/pkg/controller/framework"
+	"k8s.io/kubernetes/pkg/util/wait"
 )
 
-// serverCmd represents the server command
-var serverCmd = &cobra.Command{
-	Use:   "server",
-	Short: "Start the server",
-	RunE:  runServer,
+const (
+	resyncPeriod = 1 * time.Minute
+)
+
+type kube2gce struct {
+	kubeClient *kclient.Client
+	gceClient  *compute.Client
+	config     *config
 }
+
+// config struct for the server
+type config struct {
+	// kube cluster to connect to
+	kubeApiServer string
+	// the domain in gce to publish too
+	domain string
+}
+
+var (
+	// serverCmd represents the server command
+	serverCmd = &cobra.Command{
+		Use:   "server",
+		Short: "Start the server",
+		RunE:  runServer,
+	}
+
+	// empty config struct that we load with cobra flags
+	conf config
+)
 
 func init() {
 	RootCmd.AddCommand(serverCmd)
-	serverCmd.PersistentFlags().String("etcd-server", "", "etcd-server for kube")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// serverCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-
+	serverCmd.Flags().StringVar(&conf.kubeApiServer, "kube-api", "", "Api url to use, if running inside of kube this shouldn't be needed")
+	serverCmd.Flags().StringVar(&conf.domain, "domain", "", "Domain to register services in gce with")
 }
 
+// entrypoint invoked by Cobra when server sub cmd is run
 func runServer(cmd *cobra.Command, args []string) error {
-
-	kubeClient, err := newKubeClient()
+	k2g := kube2gce{}
+	kc, err := newKubeClient()
 	if err != nil {
 		return err
 	}
+	k2g.kubeClient = kc
 
-	watchForServices(kubeClient)
+	gce = newGCEClient()
+	if err != nil {
+		return err
+	}
+	k2g.gceClient = gce
+
+	log.Println("Starting To watch for service changes")
+	// TODO(jesse): we should reconcle or let that be an option
+	k2g.watchForServices()
+
+	select {}
+
 	return nil
 }
 
-func watchForServices(kubeClient *kclient.Client) kcache.Store {
-	serviceStore, serviceController := kframework.NewInformer(
-		createServiceLW(kubeClient),
+func newGCEClient() (*compute.Service, error) {
+
+	ctx := context.Background()
+
+	client, err := google.DefaultClient(ctx, compute.ComputeScope)
+	if err != nil {
+		return nil, err
+	}
+	computeService, err := compute.New(client)
+	if err != nil {
+		return nil, err
+	}
+
+	return computeService, nil
+}
+
+// the main watcher loop for kube service state changes
+// this should not exit just fire service evnets to their respective handlers
+func (kg *kube2gce) watchForServices() {
+	s, serviceController := kframework.NewInformer(
+		kcache.NewListWatchFromClient(kg.kubeClient, "services", kapi.NamespaceAll, kselector.Everything()),
 		&kapi.Service{},
 		resyncPeriod,
 		kframework.ResourceEventHandlerFuncs{
-			AddFunc:    newService,
-			DeleteFunc: removeService,
-			UpdateFunc: updateService,
+			AddFunc:    kg.newService,
+			DeleteFunc: kg.removeService,
+			UpdateFunc: kg.updateService,
 		},
 	)
 	go serviceController.Run(wait.NeverStop)
-	return serviceStore
+	spew.Dump(s)
+	return
 }
 
-func newService(obj interface{}) {
+func (kg *kube2gce) newService(obj interface{}) {
+	// ensure this obj is a kube service
+	if s, ok := obj.(*kapi.Service); ok {
+		log.Printf("Got New Service %+v\n", s)
+	}
 }
 
-func updateService(oldObj, newObj interface{}) {
+func (kg *kube2gce) updateService(oldObj, newObj interface{}) {
+	kg.removeService(oldObj)
+	kg.newService(newObj)
 }
 
-func removeService(obj interface{}) {
+func (kg *kube2gce) removeService(obj interface{}) {
+	if s, ok := obj.(*kapi.Service); ok {
+		log.Printf("Got Remove Service %+v\n", s)
+	}
 }
 
+// newKubeClient creates a new Kubernetes API Client
 func newKubeClient() (*kclient.Client, error) {
-	var (
-		config    *restclient.Config
-		err       error
-		masterURL string
-	)
-	// If the user specified --kube-master-url, expand env vars and verify it.
-	if *argKubeMasterURL != "" {
-		masterURL, err = expandKubeMasterURL()
-		if err != nil {
-			return nil, err
-		}
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	configOverrides := &clientcmd.ConfigOverrides{}
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+	config, err := kubeConfig.ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	if conf.kubeApiServer != "" {
+		config.Host = conf.kubeApiServer
 	}
 
-	if masterURL != "" && *argKubecfgFile == "" {
-		// Only --kube-master-url was provided.
-		config = &restclient.Config{
-			Host:          masterURL,
-			ContentConfig: restclient.ContentConfig{GroupVersion: &unversioned.GroupVersion{Version: "v1"}},
-		}
-	} else {
-		// We either have:
-		//  1) --kube-master-url and --kubecfg-file
-		//  2) just --kubecfg-file
-		//  3) neither flag
-		// In any case, the logic is the same.  If (3), this will automatically
-		// fall back on the service account token.
-		overrides := &kclientcmd.ConfigOverrides{}
-		overrides.ClusterInfo.Server = masterURL                                     // might be "", but that is OK
-		rules := &kclientcmd.ClientConfigLoadingRules{ExplicitPath: *argKubecfgFile} // might be "", but that is OK
-		if config, err = kclientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig(); err != nil {
-			return nil, err
-		}
+	client, err := kclient.New(config)
+	if err != nil {
+		return nil, err
 	}
 
-	log.Infof("Using %s for kubernetes master", config.Host)
-	log.Infof("Using kubernetes API %v", config.GroupVersion)
-	return kclient.New(config)
+	return client, nil
 }
