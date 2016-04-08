@@ -5,6 +5,6 @@
 *.key
 env
 coverage.out
-
+kube-gce-dns
 vendor/**
 !vendor/manifest

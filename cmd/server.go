@@ -15,14 +15,15 @@
 package cmd
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
-	"google.golang.org/api/compute/v1"
+	gdns "google.golang.org/api/dns/v1"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/spf13/cobra"
 
 	kapi "k8s.io/kubernetes/pkg/api"
@@ -37,12 +38,14 @@ import (
 
 const (
 	resyncPeriod = 1 * time.Minute
+	TTL          = 300
 )
 
 type kube2gce struct {
 	kubeClient *kclient.Client
-	gceClient  *compute.Client
-	config     *config
+	gceClient  *gdns.Service
+	config     config
+	zone       string // the gce dns zone
 }
 
 // config struct for the server
@@ -51,6 +54,8 @@ type config struct {
 	kubeApiServer string
 	// the domain in gce to publish too
 	domain string
+	// the GCE project
+	project string
 }
 
 var (
@@ -67,24 +72,48 @@ var (
 
 func init() {
 	RootCmd.AddCommand(serverCmd)
-	serverCmd.Flags().StringVar(&conf.kubeApiServer, "kube-api", "", "Api url to use, if running inside of kube this shouldn't be needed")
-	serverCmd.Flags().StringVar(&conf.domain, "domain", "", "Domain to register services in gce with")
+	serverCmd.Flags().StringVarP(
+		&conf.kubeApiServer,
+		"kube-api",
+		"k",
+		"http://127.0.0.1:8001",
+		"Api url to use")
+
+	serverCmd.Flags().StringVarP(
+		&conf.domain,
+		"domain",
+		"d",
+		"",
+		"Domain to register services in gce with")
+
+	serverCmd.Flags().StringVarP(
+		&conf.project,
+		"project",
+		"p",
+		"",
+		"GCE project")
 }
 
 // entrypoint invoked by Cobra when server sub cmd is run
 func runServer(cmd *cobra.Command, args []string) error {
-	k2g := kube2gce{}
+	k2g := kube2gce{config: conf}
 	kc, err := newKubeClient()
 	if err != nil {
 		return err
 	}
 	k2g.kubeClient = kc
 
-	gce = newGCEClient()
+	dnsClient, err := newDNSClient()
 	if err != nil {
 		return err
 	}
-	k2g.gceClient = gce
+	k2g.gceClient = dnsClient
+	zone, err := k2g.getHostedZone(k2g.config.domain)
+	if err != nil {
+		return err
+	}
+
+	k2g.zone = zone
 
 	log.Println("Starting To watch for service changes")
 	// TODO(jesse): we should reconcle or let that be an option
@@ -95,26 +124,24 @@ func runServer(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func newGCEClient() (*compute.Service, error) {
-
-	ctx := context.Background()
-
-	client, err := google.DefaultClient(ctx, compute.ComputeScope)
-	if err != nil {
-		return nil, err
-	}
-	computeService, err := compute.New(client)
+func newDNSClient() (*gdns.Service, error) {
+	client, err := google.DefaultClient(context.Background(), gdns.NdevClouddnsReadwriteScope)
 	if err != nil {
 		return nil, err
 	}
 
-	return computeService, nil
+	dnsService, err := gdns.New(client)
+	if err != nil {
+		return nil, err
+	}
+
+	return dnsService, nil
 }
 
 // the main watcher loop for kube service state changes
-// this should not exit just fire service evnets to their respective handlers
-func (kg *kube2gce) watchForServices() {
-	s, serviceController := kframework.NewInformer(
+// this should not exit just fire service events to their respective handlers
+func (kg kube2gce) watchForServices() {
+	_, serviceController := kframework.NewInformer(
 		kcache.NewListWatchFromClient(kg.kubeClient, "services", kapi.NamespaceAll, kselector.Everything()),
 		&kapi.Service{},
 		resyncPeriod,
@@ -125,26 +152,92 @@ func (kg *kube2gce) watchForServices() {
 		},
 	)
 	go serviceController.Run(wait.NeverStop)
-	spew.Dump(s)
 	return
 }
 
-func (kg *kube2gce) newService(obj interface{}) {
+func (kg kube2gce) newService(obj interface{}) {
 	// ensure this obj is a kube service
+	// TODO(jesse): break this up
 	if s, ok := obj.(*kapi.Service); ok {
-		log.Printf("Got New Service %+v\n", s)
+		if s.Namespace == "kube-system" {
+			log.Printf("Service '%s' is in kube system, skipping.", s.Name)
+			return
+		}
+
+		dnsName := fmt.Sprintf("%s.%s", s.Name, s.Namespace)
+		log.Printf("Got Possible New Service %s", dnsName)
+		if strings.Contains(s.Name, ".") {
+			log.Printf("Can't publish service name '%s' dots not allowed")
+			return
+		}
+
+		// the list of external IP's might be nil or empty.
+		if ingress := s.Status.LoadBalancer.Ingress; ingress != nil {
+			var addrs []string
+			for _, lb := range ingress {
+				addrs = append(addrs, lb.IP)
+			}
+			fqdn := fmt.Sprintf("%s.%s.", dnsName, kg.config.domain)
+			kg.publishDNS(fqdn, addrs, TTL)
+		}
 	}
 }
 
-func (kg *kube2gce) updateService(oldObj, newObj interface{}) {
+func (kg kube2gce) publishDNS(fqdn string, addresses []string, ttl int) {
+	rec := &gdns.ResourceRecordSet{
+		Name:    fqdn,
+		Rrdatas: addresses,
+		Ttl:     int64(ttl),
+		Type:    "A",
+	}
+	change := &gdns.Change{
+		Additions: []*gdns.ResourceRecordSet{rec},
+	}
+
+	chg, err := kg.gceClient.Changes.Create(kg.config.project, kg.zone, change).Do()
+	if err != nil {
+		log.Printf("Error creating change: %s", err)
+		return
+	}
+
+	// wait for change to be acknowledged
+	for chg.Status == "pending" {
+		time.Sleep(time.Second)
+
+		chg, err = kg.gceClient.Changes.Get(kg.config.project, kg.zone, chg.Id).Do()
+		if err != nil {
+			log.Printf("Error while trying to get changes: %s", err)
+			return
+		}
+	}
+
+	log.Printf("Registered '%s' with ips '%v' ", fqdn, addresses)
+}
+
+func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 	kg.removeService(oldObj)
 	kg.newService(newObj)
 }
 
-func (kg *kube2gce) removeService(obj interface{}) {
+func (kg kube2gce) removeService(obj interface{}) {
 	if s, ok := obj.(*kapi.Service); ok {
-		log.Printf("Got Remove Service %+v\n", s)
+		log.Printf("Got Remove Service %s in %s\n", s.Name, s.Namespace)
 	}
+}
+
+func (kg kube2gce) getHostedZone(domain string) (string, error) {
+	zones, err := kg.gceClient.ManagedZones.List(kg.config.project).Do()
+	if err != nil {
+		return "", fmt.Errorf("GoogleCloud API call failed: %v", err)
+	}
+
+	for _, z := range zones.ManagedZones {
+		if strings.HasSuffix(domain+".", z.DnsName) {
+			return z.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("No matching GoogleCloud domain found for domain %s", domain)
 }
 
 // newKubeClient creates a new Kubernetes API Client
