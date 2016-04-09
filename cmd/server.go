@@ -17,6 +17,7 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ import (
 const (
 	resyncPeriod = 1 * time.Minute
 	TTL          = 300
+	KUBE_SYSTEM  = "kube-system"
 )
 
 type kube2gce struct {
@@ -155,43 +157,146 @@ func (kg kube2gce) watchForServices() {
 	return
 }
 
-func (kg kube2gce) newService(obj interface{}) {
-	// ensure this obj is a kube service
-	// TODO(jesse): break this up
-	if s, ok := obj.(*kapi.Service); ok {
-		if s.Namespace == "kube-system" {
-			log.Printf("Service '%s' is in kube system, skipping.", s.Name)
-			return
-		}
-
-		dnsName := fmt.Sprintf("%s.%s", s.Name, s.Namespace)
-		log.Printf("Got Possible New Service %s", dnsName)
-		if strings.Contains(s.Name, ".") {
-			log.Printf("Can't publish service name '%s' dots not allowed")
-			return
-		}
-
-		// the list of external IP's might be nil or empty.
-		if ingress := s.Status.LoadBalancer.Ingress; ingress != nil {
-			var addrs []string
-			for _, lb := range ingress {
-				addrs = append(addrs, lb.IP)
-			}
-			fqdn := fmt.Sprintf("%s.%s.", dnsName, kg.config.domain)
-			kg.publishDNS(fqdn, addrs, TTL)
-		}
+func validateService(ns, name string) bool {
+	if ns == KUBE_SYSTEM {
+		log.Printf("Service '%s' is in restricted namespace %s, skipping.", name, KUBE_SYSTEM)
+		return false
 	}
+
+	if strings.Contains(name, ".") {
+		log.Printf("Can't publish service name '%s' dots not allowed")
+		return false
+	}
+
+	return true
 }
 
-func (kg kube2gce) publishDNS(fqdn string, addresses []string, ttl int) {
-	rec := &gdns.ResourceRecordSet{
+func publicServiceAddrs(ingressRouters []kapi.LoadBalancerIngress) []string {
+	var addrs []string
+	if ingress := ingressRouters; ingress != nil {
+		for _, lb := range ingress {
+			addrs = append(addrs, lb.IP)
+		}
+	}
+	return addrs
+}
+
+func (kg kube2gce) newService(obj interface{}) {
+	s, ok := obj.(*kapi.Service)
+	if ok == false {
+		return
+	}
+
+	if validateService(s.Name, s.Namespace) == false {
+		return
+	}
+
+	addrs := publicServiceAddrs(s.Status.LoadBalancer.Ingress)
+	if len(addrs) <= 0 {
+		return
+	}
+
+	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
+	log.Printf("Got Possible New Service %s", fqdn)
+	newRec := &gdns.ResourceRecordSet{
 		Name:    fqdn,
-		Rrdatas: addresses,
-		Ttl:     int64(ttl),
+		Rrdatas: addrs,
+		Ttl:     int64(TTL),
 		Type:    "A",
 	}
-	change := &gdns.Change{
-		Additions: []*gdns.ResourceRecordSet{rec},
+
+	go kg.updateDNS(nil, newRec)
+}
+
+func (kg kube2gce) updateService(oldObj, newObj interface{}) {
+	s, ok := newObj.(*kapi.Service)
+	if ok == false {
+		return
+	}
+
+	if validateService(s.Name, s.Namespace) == false {
+		return
+	}
+
+	newAddrs := publicServiceAddrs(s.Status.LoadBalancer.Ingress)
+	if len(newAddrs) <= 0 {
+		return
+	}
+
+	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
+	oldAddrs := publicServiceAddrs(oldObj.(*kapi.Service).Status.LoadBalancer.Ingress)
+	if reflect.DeepEqual(newAddrs, oldAddrs) {
+		log.Printf("old and new service have same addresses, wont update. %s %v:%v", fqdn, oldAddrs, newAddrs)
+		return
+	}
+
+	log.Printf("Got Possible Service update %s", fqdn)
+
+	oldRec := &gdns.ResourceRecordSet{
+		Name:    fqdn,
+		Rrdatas: oldAddrs,
+		Ttl:     int64(TTL),
+		Type:    "A",
+	}
+
+	newRec := &gdns.ResourceRecordSet{
+		Name:    fqdn,
+		Rrdatas: newAddrs,
+		Ttl:     int64(TTL),
+		Type:    "A",
+	}
+
+	go kg.updateDNS(oldRec, newRec)
+}
+
+func (kg kube2gce) removeService(obj interface{}) {
+	s, ok := obj.(*kapi.Service)
+	if ok == false {
+		return
+	}
+
+	if validateService(s.Name, s.Namespace) == false {
+		return
+	}
+
+	addrs := publicServiceAddrs(s.Status.LoadBalancer.Ingress)
+	if len(addrs) <= 0 {
+		return
+	}
+
+	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
+	log.Printf("Got Remove for %s", fqdn)
+
+	newRec := &gdns.ResourceRecordSet{
+		Name:    fqdn,
+		Rrdatas: addrs,
+		Ttl:     int64(TTL),
+		Type:    "A",
+	}
+
+	go kg.updateDNS(newRec, nil)
+}
+
+// updateDNS will delete/add record sets against the GCloud API
+func (kg kube2gce) updateDNS(delete, add *gdns.ResourceRecordSet) {
+	// just incase
+	if add == nil && delete == nil {
+		log.Println("No add or delete provided not going to update.")
+		return
+	}
+
+	change := &gdns.Change{}
+
+	addName := ""
+	deleteName := ""
+	change.Additions = []*gdns.ResourceRecordSet{add}
+	if add != nil {
+		addName = add.Name
+	}
+
+	change.Deletions = []*gdns.ResourceRecordSet{delete}
+	if delete != nil {
+		deleteName = delete.Name
 	}
 
 	chg, err := kg.gceClient.Changes.Create(kg.config.project, kg.zone, change).Do()
@@ -211,18 +316,7 @@ func (kg kube2gce) publishDNS(fqdn string, addresses []string, ttl int) {
 		}
 	}
 
-	log.Printf("Registered '%s' with ips '%v' ", fqdn, addresses)
-}
-
-func (kg kube2gce) updateService(oldObj, newObj interface{}) {
-	kg.removeService(oldObj)
-	kg.newService(newObj)
-}
-
-func (kg kube2gce) removeService(obj interface{}) {
-	if s, ok := obj.(*kapi.Service); ok {
-		log.Printf("Got Remove Service %s in %s\n", s.Name, s.Namespace)
-	}
+	log.Printf("Applied change: Added: '%s' Delete: '%s'", addName, deleteName)
 }
 
 func (kg kube2gce) getHostedZone(domain string) (string, error) {
