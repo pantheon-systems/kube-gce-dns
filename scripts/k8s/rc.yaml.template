@@ -1,0 +1,35 @@
+# vim: set ft=yaml:
+# -*- mode: yaml -*-
+---
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: kube-gce-dns
+spec:
+  replicas: 1
+  selector:
+    app: kube-gce-dns
+  template:
+    metadata:
+      labels:
+        app: kube-gce-dns
+    spec:
+      containers:
+        - image: "__IMAGE__"
+          name: kube-gce-dns
+          imagePullPolicy: Always
+          # imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          command:
+            - /kube-gce-dns
+          env:
+          - name: KGD_PROJECT
+            value: __PROJECT__
+          - name: KGD_DOMAIN
+            value: __DOMAIN__

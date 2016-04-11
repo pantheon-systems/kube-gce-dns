@@ -76,7 +76,7 @@ func init() {
 	RootCmd.AddCommand(serverCmd)
 	serverCmd.Flags().StringVarP(
 		&conf.kubeApiServer,
-		"kube-api",
+		"api",
 		"k",
 		"http://127.0.0.1:8001",
 		"Api url to use")

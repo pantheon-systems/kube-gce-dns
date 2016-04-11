@@ -1,0 +1,35 @@
+machine:
+  environment:
+    GOVERSION: 1.6
+    GOPATH: /home/ubuntu/go_workspace
+    GOROOT: /home/ubuntu/go$GOVERSION
+    PATH: /home/ubuntu/google-cloud-sdk/bin:/home/ubuntu/go$GOVERSION/bin:$GOPATH/bin:$PATH
+  python:
+    version: 2.7.3
+  services:
+    - docker
+
+dependencies:
+  cache_directories:
+    - ../google-cloud-sdk
+    - ../go_workspace
+    - ../go1.6
+    - vendor
+
+  override:
+    - make fix_circle_go
+    - make circle_kube_deps # do this here so it gets cached
+    - make deps
+
+test:
+  override:
+    - make test
+
+deployment:
+  production:
+    branch:
+      - master
+      - deploy
+    commands:
+      - docker login -p "$QUAY_PASSWD" -u "$QUAY_USER" -e "unused@unused" quay.io
+      - make deploy
