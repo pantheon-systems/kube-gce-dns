@@ -27,7 +27,7 @@ Run `make test`
 ### Running locally
 Use kubectl proxy to spin up a proxy to your kube api then run the server with `--api localhost:8001` or whatever port your proxy has been setup on.
 
-### Design & Rational
+### Design & Rationale
 When adding/removing services with public IP addresses in kube you might want to also update public dns to those services. This does that for you.
 
 The service is designed to run in the kube-system namespace, and will watch service events for add/remove/update actions, and fire the appropriate calls to the Google DNS service.

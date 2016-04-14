@@ -15,6 +15,7 @@ gvt_install:  ## install the gvt util
 		go get -u github.com/FiloSottile/gvt
 
 deps: gvt_install
+	find  ./vendor/* -maxdepth 0 -type d -exec rm -rf "{}" \;
 	gvt rebuild
 
 cover_deps:
@@ -48,28 +49,19 @@ build_osx: *.go ## build for osx
 build_linux: *.go ## build for linux
 	GOOS=linux CGO_ENABLED=0  go build -a .
 
-build_docker: build_linux ## build docker container
+cert:
+	curl https://curl.haxx.se/ca/cacert.pem -o ca-certificates.crt
+
+build_docker: cert build_linux ## build docker container
 	docker build -t $(IMAGE) .
 
-# package/deploy
-circle_kube_deps:
-	scripts/k8s/gcloud_setup.sh
-
 fix_circle_go: # ensure go 1.6 is setup
-	scripts/install-go.sh
+	scripts/circle-go.sh
 
-deploy: push update_rc ## push the image, update the rc in kube
+deploy: push ## push the image to quay
 
 push: build_docker ## push container to docker registry
 	docker push $(IMAGE)
-
-update_rc: ## update the kubernetes replication controller
-	kubectl --namespace=kube-system delete rc kube-gce-dns || true
-	sed -e "s#__IMAGE__#$(IMAGE)#g" ;\
-	sed -e "s#__PROJECT__#$(GCLOUDSDK_CORE_PROJECT)#g" ;\
-	sed -e "s#__DOMAIN__#$(DOMAIN)#g" \
-			scripts/k8s/rc.yaml.template \
-			| kubectl apply --namespace=kube-system -f -
 
 help: ## print list of tasks and descriptions
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'

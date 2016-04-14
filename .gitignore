@@ -8,3 +8,4 @@ coverage.out
 kube-gce-dns
 vendor/**
 !vendor/manifest
+ca-certificates.crt
