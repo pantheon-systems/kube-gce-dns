@@ -12,11 +12,10 @@ IMAGE := $(REGISTRY)/$(APP):$(BUILD_NUM)
 
 # deps
 gvt_install:  ## install the gvt util
-		go get -u github.com/FiloSottile/gvt
+	go get -u github.com/FiloSottile/gvt
 
 deps: gvt_install
-	find  ./vendor/* -maxdepth 0 -type d -exec rm -rf "{}" \;
-	gvt rebuild
+	gvt rebuild || true
 
 cover_deps:
 	go get github.com/pierrre/gotestcover
@@ -29,6 +28,7 @@ ifeq ($(CIRCLECI), true)
 	go env
 endif
 	go test -v $$(go list ./... | grep -v /vendor/)
+	go build -v -race
 
 cov: cover_deps ## generate coverage report (coverage.out)
 	gotestcover -coverprofile=coverage.out $$(go list ./... | grep -v /vendor/)
