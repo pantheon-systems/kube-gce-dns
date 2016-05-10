@@ -1,0 +1,34 @@
+---
+machine:
+  environment:
+    GOVERSION: 1.6.2
+    GOPATH: /home/ubuntu/go_workspace
+    GOROOT: /home/ubuntu/go$GOVERSION
+    PATH: /home/ubuntu/go$GOVERSION/bin:$GOPATH/bin:$PATH
+  python:
+    version: 2.7.3
+  services:
+    - docker
+
+dependencies:
+  cache_directories:
+    - ../google-cloud-sdk
+    - ../go_workspace
+    - ../go1.6
+    - vendor
+
+  override:
+    - make fix_circle_go
+    - make deps
+
+test:
+  override:
+    - make test
+
+deployment:
+  production:
+    branch:
+      - master
+    commands:
+      - docker login -p "$QUAY_PASSWD" -u "$QUAY_USER" -e "unused@unused" quay.io
+      - make deploy

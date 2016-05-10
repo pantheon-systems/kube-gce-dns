@@ -9,6 +9,13 @@
 			"notests": true
 		},
 		{
+			"importpath": "github.com/Sirupsen/logrus",
+			"repository": "https://github.com/Sirupsen/logrus",
+			"revision": "4b6ea7319e214d98c938f12692336f7ca9348d6b",
+			"branch": "master",
+			"notests": true
+		},
+		{
 			"importpath": "github.com/beorn7/perks/quantile",
 			"repository": "https://github.com/beorn7/perks",
 			"revision": "3ac7bf7a47d159a033b107610db8a1b6575507a4",
@@ -52,6 +59,13 @@
 			"revision": "0f5c9d301b9b1cca66b3ea0f9dec3b5317d3686d",
 			"branch": "master",
 			"path": "/pkg/parsers",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/docker/go-units",
+			"repository": "https://github.com/docker/go-units",
+			"revision": "5d2041e26a699eaca682e2ea41c8f891e1060444",
+			"branch": "master",
 			"notests": true
 		},
 		{
@@ -254,6 +268,46 @@
 			"repository": "https://github.com/mjibson/appstats",
 			"revision": "0542d5f0e87ea3a8fa4174322b9532f5d04f9fa8",
 			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/opencontainers/runc/libcontainer/cgroups",
+			"repository": "https://github.com/opencontainers/runc",
+			"revision": "6c59168557c91dc947ae88c79bc3c55426ef90ca",
+			"branch": "master",
+			"path": "/libcontainer/cgroups",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/opencontainers/runc/libcontainer/cgroups/fs",
+			"repository": "https://github.com/opencontainers/runc",
+			"revision": "6c59168557c91dc947ae88c79bc3c55426ef90ca",
+			"branch": "master",
+			"path": "/libcontainer/cgroups/fs",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/opencontainers/runc/libcontainer/configs",
+			"repository": "https://github.com/opencontainers/runc",
+			"revision": "6c59168557c91dc947ae88c79bc3c55426ef90ca",
+			"branch": "master",
+			"path": "/libcontainer/configs",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/opencontainers/runc/libcontainer/system",
+			"repository": "https://github.com/opencontainers/runc",
+			"revision": "6c59168557c91dc947ae88c79bc3c55426ef90ca",
+			"branch": "master",
+			"path": "/libcontainer/system",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/opencontainers/runc/libcontainer/utils",
+			"repository": "https://github.com/opencontainers/runc",
+			"revision": "6c59168557c91dc947ae88c79bc3c55426ef90ca",
+			"branch": "master",
+			"path": "/libcontainer/utils",
 			"notests": true
 		},
 		{

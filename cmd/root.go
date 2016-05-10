@@ -24,7 +24,7 @@ import (
 
 var cfgFile string
 
-// This represents the base command when called without any subcommands
+// RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
 	Use:   "kube-gce-dns",
 	Short: "Export service public IP's to GCE dns",
@@ -56,7 +56,8 @@ func initConfig() {
 
 	viper.SetConfigName(".kube-gce-dns") // name of config file (without extension)
 	viper.AddConfigPath("$HOME")         // adding home directory as first search path
-	viper.AutomaticEnv()                 // read in environment variables that match
+	viper.SetEnvPrefix("KGD")
+	viper.AutomaticEnv() // read in environment variables that match
 
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {

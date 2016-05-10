@@ -25,6 +25,7 @@ import (
 	"golang.org/x/oauth2/google"
 	gdns "google.golang.org/api/dns/v1"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/spf13/cobra"
 
 	kapi "k8s.io/kubernetes/pkg/api"
@@ -39,9 +40,21 @@ import (
 
 const (
 	resyncPeriod = 1 * time.Minute
-	TTL          = 300
-	KUBE_SYSTEM  = "kube-system"
+	// TTL is the DNS record TTL
+	TTL = 300
+	// KubeSystemNamespace is the namespace for kube-system (usually kube-system)
+	KubeSystemNamespace = "kube-system"
+
+	add serviceAction = iota
+	delete
 )
+
+type serviceAction int
+
+var actionStrings = map[serviceAction]string{
+	add:    "Add",
+	delete: "Delete",
+}
 
 type kube2gce struct {
 	kubeClient *kclient.Client
@@ -53,7 +66,7 @@ type kube2gce struct {
 // config struct for the server
 type config struct {
 	// kube cluster to connect to
-	kubeApiServer string
+	kubeAPIServer string
 	// the domain in gce to publish too
 	domain string
 	// the GCE project
@@ -74,11 +87,12 @@ var (
 
 func init() {
 	RootCmd.AddCommand(serverCmd)
+
 	serverCmd.Flags().StringVarP(
-		&conf.kubeApiServer,
-		"kube-api",
+		&conf.kubeAPIServer,
+		"api",
 		"k",
-		"http://127.0.0.1:8001",
+		"",
 		"Api url to use")
 
 	serverCmd.Flags().StringVarP(
@@ -118,12 +132,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	k2g.zone = zone
 
 	log.Println("Starting To watch for service changes")
-	// TODO(jesse): we should reconcle or let that be an option
+	// TODO(jesse): we should reconcile or let that be an option
 	k2g.watchForServices()
 
 	select {}
-
-	return nil
 }
 
 func newDNSClient() (*gdns.Service, error) {
@@ -148,8 +160,8 @@ func (kg kube2gce) watchForServices() {
 		&kapi.Service{},
 		resyncPeriod,
 		kframework.ResourceEventHandlerFuncs{
-			AddFunc:    kg.newService,
-			DeleteFunc: kg.removeService,
+			AddFunc:    kg.addService,
+			DeleteFunc: kg.deleteService,
 			UpdateFunc: kg.updateService,
 		},
 	)
@@ -158,19 +170,20 @@ func (kg kube2gce) watchForServices() {
 }
 
 func validateService(ns, name string) bool {
-	if ns == KUBE_SYSTEM {
-		log.Printf("Service '%s' is in restricted namespace %s, skipping.", name, KUBE_SYSTEM)
+	if ns == KubeSystemNamespace {
+		log.Printf("Service '%s' is in restricted namespace %s, skipping.", name, KubeSystemNamespace)
 		return false
 	}
 
 	if strings.Contains(name, ".") {
-		log.Printf("Can't publish service name '%s' dots not allowed")
+		log.Printf("Can't publish service name '%s' dots not allowed", name)
 		return false
 	}
 
 	return true
 }
 
+// publicServiceAddrs pulls the public IP's from the Ingres LB's
 func publicServiceAddrs(ingressRouters []kapi.LoadBalancerIngress) []string {
 	var addrs []string
 	if ingress := ingressRouters; ingress != nil {
@@ -181,7 +194,15 @@ func publicServiceAddrs(ingressRouters []kapi.LoadBalancerIngress) []string {
 	return addrs
 }
 
-func (kg kube2gce) newService(obj interface{}) {
+func (kg kube2gce) addService(obj interface{}) {
+	go kg.addOrDeleteService(obj, add)
+}
+
+func (kg kube2gce) deleteService(obj interface{}) {
+	go kg.addOrDeleteService(obj, delete)
+}
+
+func (kg kube2gce) addOrDeleteService(obj interface{}, action serviceAction) {
 	s, ok := obj.(*kapi.Service)
 	if ok == false {
 		return
@@ -197,7 +218,6 @@ func (kg kube2gce) newService(obj interface{}) {
 	}
 
 	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
-	log.Printf("Got Possible New Service %s", fqdn)
 	newRec := &gdns.ResourceRecordSet{
 		Name:    fqdn,
 		Rrdatas: addrs,
@@ -205,9 +225,24 @@ func (kg kube2gce) newService(obj interface{}) {
 		Type:    "A",
 	}
 
-	go kg.updateDNS(nil, newRec)
+	var change gdns.Change
+	if action == add {
+		change = gdns.Change{
+			Additions: []*gdns.ResourceRecordSet{newRec},
+			Deletions: nil,
+		}
+	} else {
+		change = gdns.Change{
+			Additions: nil,
+			Deletions: []*gdns.ResourceRecordSet{newRec},
+		}
+	}
+
+	log.Printf("%s Service %s %v", actionStrings[action], fqdn, addrs)
+	go kg.updateDNS(&change)
 }
 
+// updateService resolves a services ip list and updates dns if the old and new records differ
 func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 	s, ok := newObj.(*kapi.Service)
 	if ok == false {
@@ -225,10 +260,6 @@ func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 
 	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
 	oldAddrs := publicServiceAddrs(oldObj.(*kapi.Service).Status.LoadBalancer.Ingress)
-	if reflect.DeepEqual(newAddrs, oldAddrs) {
-		log.Printf("old and new service have same addresses, wont update. %s %v:%v", fqdn, oldAddrs, newAddrs)
-		return
-	}
 
 	log.Printf("Got Possible Service update %s", fqdn)
 
@@ -246,59 +277,21 @@ func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 		Type:    "A",
 	}
 
-	go kg.updateDNS(oldRec, newRec)
-}
-
-func (kg kube2gce) removeService(obj interface{}) {
-	s, ok := obj.(*kapi.Service)
-	if ok == false {
+	if reflect.DeepEqual(newAddrs, oldAddrs) {
+		log.Printf("old and new service have same addresses, will validate with api. %s %v:%v", fqdn, oldAddrs, newAddrs)
+		kg.checkAndUpdateDNS(newRec)
 		return
 	}
 
-	if validateService(s.Name, s.Namespace) == false {
-		return
+	change := &gdns.Change{
+		Additions: []*gdns.ResourceRecordSet{newRec},
+		Deletions: []*gdns.ResourceRecordSet{oldRec},
 	}
-
-	addrs := publicServiceAddrs(s.Status.LoadBalancer.Ingress)
-	if len(addrs) <= 0 {
-		return
-	}
-
-	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
-	log.Printf("Got Remove for %s", fqdn)
-
-	newRec := &gdns.ResourceRecordSet{
-		Name:    fqdn,
-		Rrdatas: addrs,
-		Ttl:     int64(TTL),
-		Type:    "A",
-	}
-
-	go kg.updateDNS(newRec, nil)
+	go kg.updateDNS(change)
 }
 
 // updateDNS will delete/add record sets against the GCloud API
-func (kg kube2gce) updateDNS(delete, add *gdns.ResourceRecordSet) {
-	// just incase
-	if add == nil && delete == nil {
-		log.Println("No add or delete provided not going to update.")
-		return
-	}
-
-	change := &gdns.Change{}
-
-	addName := ""
-	deleteName := ""
-	change.Additions = []*gdns.ResourceRecordSet{add}
-	if add != nil {
-		addName = add.Name
-	}
-
-	change.Deletions = []*gdns.ResourceRecordSet{delete}
-	if delete != nil {
-		deleteName = delete.Name
-	}
-
+func (kg kube2gce) updateDNS(change *gdns.Change) {
 	chg, err := kg.gceClient.Changes.Create(kg.config.project, kg.zone, change).Do()
 	if err != nil {
 		log.Printf("Error creating change: %s", err)
@@ -316,9 +309,47 @@ func (kg kube2gce) updateDNS(delete, add *gdns.ResourceRecordSet) {
 		}
 	}
 
-	log.Printf("Applied change: Added: '%s' Delete: '%s'", addName, deleteName)
+	log.Printf("Applied change, Add: %s Delete: %s", spew.Sdump(chg.Additions), spew.Sdump(chg.Deletions))
 }
 
+// check the google DNS service to see if the record has changed from what kube reports.
+// if it has changed then push an update
+func (kg kube2gce) checkAndUpdateDNS(newRecord *gdns.ResourceRecordSet) {
+	listCall := kg.gceClient.ResourceRecordSets.List(kg.config.project, kg.zone).Name(newRecord.Name)
+	rr, err := listCall.Do()
+	if err != nil {
+		log.Printf("Error while trying to get existing record for %s: %s", newRecord.Name, err)
+		return
+	}
+
+	change := &gdns.Change{
+		Additions: []*gdns.ResourceRecordSet{newRecord},
+		Deletions: rr.Rrsets,
+	}
+
+	// TODO: add a better compare, that includes type/TTL
+	if len(rr.Rrsets) != len(change.Additions) {
+		log.Printf("GCE and new record for %s are out of sync, updating", newRecord.Name)
+		go kg.updateDNS(change)
+		return
+	}
+
+	for i, rs := range rr.Rrsets {
+		if !reflect.DeepEqual(rs.Rrdatas, change.Additions[i].Rrdatas) {
+			log.Printf("Replacing existing record for %s, rrdata has drifted %v != %v",
+				newRecord.Name,
+				rs.Rrdatas,
+				change.Additions[i].Rrdatas)
+
+			go kg.updateDNS(change)
+			return
+		}
+	}
+
+	log.Printf("GCE and new record for %s are in sync", newRecord.Name)
+}
+
+// getHostedZone makes sure the zone exists in GCE
 func (kg kube2gce) getHostedZone(domain string) (string, error) {
 	zones, err := kg.gceClient.ManagedZones.List(kg.config.project).Do()
 	if err != nil {
@@ -343,9 +374,11 @@ func newKubeClient() (*kclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if conf.kubeApiServer != "" {
-		config.Host = conf.kubeApiServer
+
+	if conf.kubeAPIServer != "" {
+		config.Host = conf.kubeAPIServer
 	}
+	log.Printf("Using %s for kube api", config.Host)
 
 	client, err := kclient.New(config)
 	if err != nil {
