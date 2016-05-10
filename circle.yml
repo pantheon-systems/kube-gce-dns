@@ -14,7 +14,7 @@ dependencies:
   cache_directories:
     - ../google-cloud-sdk
     - ../go_workspace
-    - ../go1.6
+    - ../go1.6.2
     - vendor
 
   override:
