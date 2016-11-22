@@ -21,21 +21,20 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/1.5/kubernetes"
+	"k8s.io/client-go/1.5/pkg/api"
+	"k8s.io/client-go/1.5/pkg/api/v1"
+	"k8s.io/client-go/1.5/pkg/fields"
+	"k8s.io/client-go/1.5/pkg/util/wait"
+	"k8s.io/client-go/1.5/tools/cache"
+	"k8s.io/client-go/1.5/tools/clientcmd"
+
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	gdns "google.golang.org/api/dns/v1"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/spf13/cobra"
-
-	kapi "k8s.io/kubernetes/pkg/api"
-	kcache "k8s.io/kubernetes/pkg/client/cache"
-	kclient "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
-	kselector "k8s.io/kubernetes/pkg/fields"
-
-	kframework "k8s.io/kubernetes/pkg/controller/framework"
-	"k8s.io/kubernetes/pkg/util/wait"
 )
 
 const (
@@ -57,7 +56,7 @@ var actionStrings = map[serviceAction]string{
 }
 
 type kube2gce struct {
-	kubeClient *kclient.Client
+	kubeClient *kubernetes.Clientset
 	gceClient  *gdns.Service
 	config     config
 	zone       string // the gce dns zone
@@ -155,11 +154,11 @@ func newDNSClient() (*gdns.Service, error) {
 // the main watcher loop for kube service state changes
 // this should not exit just fire service events to their respective handlers
 func (kg kube2gce) watchForServices() {
-	_, serviceController := kframework.NewInformer(
-		kcache.NewListWatchFromClient(kg.kubeClient, "services", kapi.NamespaceAll, kselector.Everything()),
-		&kapi.Service{},
+	_, serviceController := cache.NewInformer(
+		cache.NewListWatchFromClient(kg.kubeClient.Core().GetRESTClient(), "services", api.NamespaceAll, fields.Everything()),
+		&v1.Service{},
 		resyncPeriod,
-		kframework.ResourceEventHandlerFuncs{
+		cache.ResourceEventHandlerFuncs{
 			AddFunc:    kg.addService,
 			DeleteFunc: kg.deleteService,
 			UpdateFunc: kg.updateService,
@@ -184,7 +183,7 @@ func validateService(ns, name string) bool {
 }
 
 // publicServiceAddrs pulls the public IP's from the Ingres LB's
-func publicServiceAddrs(ingressRouters []kapi.LoadBalancerIngress) []string {
+func publicServiceAddrs(ingressRouters []v1.LoadBalancerIngress) []string {
 	var addrs []string
 	if ingress := ingressRouters; ingress != nil {
 		for _, lb := range ingress {
@@ -203,7 +202,7 @@ func (kg kube2gce) deleteService(obj interface{}) {
 }
 
 func (kg kube2gce) addOrDeleteService(obj interface{}, action serviceAction) {
-	s, ok := obj.(*kapi.Service)
+	s, ok := obj.(*v1.Service)
 	if ok == false {
 		return
 	}
@@ -244,7 +243,7 @@ func (kg kube2gce) addOrDeleteService(obj interface{}, action serviceAction) {
 
 // updateService resolves a services ip list and updates dns if the old and new records differ
 func (kg kube2gce) updateService(oldObj, newObj interface{}) {
-	s, ok := newObj.(*kapi.Service)
+	s, ok := newObj.(*v1.Service)
 	if ok == false {
 		return
 	}
@@ -259,7 +258,7 @@ func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 	}
 
 	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
-	oldAddrs := publicServiceAddrs(oldObj.(*kapi.Service).Status.LoadBalancer.Ingress)
+	oldAddrs := publicServiceAddrs(oldObj.(*v1.Service).Status.LoadBalancer.Ingress)
 
 	log.Printf("Got Possible Service update %s", fqdn)
 
@@ -366,7 +365,7 @@ func (kg kube2gce) getHostedZone(domain string) (string, error) {
 }
 
 // newKubeClient creates a new Kubernetes API Client
-func newKubeClient() (*kclient.Client, error) {
+func newKubeClient() (*kubernetes.Clientset, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
@@ -380,7 +379,7 @@ func newKubeClient() (*kclient.Client, error) {
 	}
 	log.Printf("Using %s for kube api", config.Host)
 
-	client, err := kclient.New(config)
+	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
