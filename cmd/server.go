@@ -38,10 +38,13 @@ import (
 )
 
 const (
-	resyncPeriod = 1 * time.Minute
+	// resyncPeriod sets an interval for a full reconciliation of all services and DNS records.
+	// NOTE: careful setting this too low, you may hit limits on the google dns API quota.
+	resyncPeriod = 60 * time.Minute
 	// TTL is the DNS record TTL
 	TTL = 300
-	// KubeSystemNamespace is the namespace for kube-system (usually kube-system)
+	// KubeSystemNamespace is the namespace for kube-system (usually kube-system). Services
+	// in this namespace will be ignored.
 	KubeSystemNamespace = "kube-system"
 
 	add serviceAction = iota
@@ -131,7 +134,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 	k2g.zone = zone
 
 	log.Println("Starting To watch for service changes")
-	// TODO(jesse): we should reconcile or let that be an option
 	k2g.watchForServices()
 
 	select {}
