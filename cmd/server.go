@@ -354,7 +354,7 @@ func (kg kube2gce) checkAndUpdateDNS(newRecord *gdns.ResourceRecordSet) {
 func (kg kube2gce) getHostedZone(domain string) (string, error) {
 	zones, err := kg.gceClient.ManagedZones.List(kg.config.project).Do()
 	if err != nil {
-		return "", fmt.Errorf("GoogleCloud API call failed: %v", err)
+		return "", fmt.Errorf("Google Cloud DNS API call failed: %v", err)
 	}
 
 	for _, z := range zones.ManagedZones {
@@ -363,7 +363,7 @@ func (kg kube2gce) getHostedZone(domain string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("No matching GoogleCloud domain found for domain %s", domain)
+	return "", fmt.Errorf("No matching Google Cloud DNS domain found for domain %s", domain)
 }
 
 // newKubeClient creates a new Kubernetes API Client
