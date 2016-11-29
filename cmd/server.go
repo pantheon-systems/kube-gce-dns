@@ -21,28 +21,30 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/1.5/kubernetes"
+	"k8s.io/client-go/1.5/pkg/api"
+	"k8s.io/client-go/1.5/pkg/api/v1"
+	"k8s.io/client-go/1.5/pkg/fields"
+	"k8s.io/client-go/1.5/pkg/util/wait"
+	"k8s.io/client-go/1.5/tools/cache"
+	"k8s.io/client-go/1.5/tools/clientcmd"
+
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	gdns "google.golang.org/api/dns/v1"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/spf13/cobra"
-
-	kapi "k8s.io/kubernetes/pkg/api"
-	kcache "k8s.io/kubernetes/pkg/client/cache"
-	kclient "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
-	kselector "k8s.io/kubernetes/pkg/fields"
-
-	kframework "k8s.io/kubernetes/pkg/controller/framework"
-	"k8s.io/kubernetes/pkg/util/wait"
 )
 
 const (
-	resyncPeriod = 1 * time.Minute
+	// resyncPeriod sets an interval for a full reconciliation of all services and DNS records.
+	// NOTE: careful setting this too low, you may hit limits on the google dns API quota.
+	resyncPeriod = 60 * time.Minute
 	// TTL is the DNS record TTL
 	TTL = 300
-	// KubeSystemNamespace is the namespace for kube-system (usually kube-system)
+	// KubeSystemNamespace is the namespace for kube-system (usually kube-system). Services
+	// in this namespace will be ignored.
 	KubeSystemNamespace = "kube-system"
 
 	add serviceAction = iota
@@ -57,7 +59,7 @@ var actionStrings = map[serviceAction]string{
 }
 
 type kube2gce struct {
-	kubeClient *kclient.Client
+	kubeClient *kubernetes.Clientset
 	gceClient  *gdns.Service
 	config     config
 	zone       string // the gce dns zone
@@ -132,7 +134,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 	k2g.zone = zone
 
 	log.Println("Starting To watch for service changes")
-	// TODO(jesse): we should reconcile or let that be an option
 	k2g.watchForServices()
 
 	select {}
@@ -155,11 +156,11 @@ func newDNSClient() (*gdns.Service, error) {
 // the main watcher loop for kube service state changes
 // this should not exit just fire service events to their respective handlers
 func (kg kube2gce) watchForServices() {
-	_, serviceController := kframework.NewInformer(
-		kcache.NewListWatchFromClient(kg.kubeClient, "services", kapi.NamespaceAll, kselector.Everything()),
-		&kapi.Service{},
+	_, serviceController := cache.NewInformer(
+		cache.NewListWatchFromClient(kg.kubeClient.Core().GetRESTClient(), "services", api.NamespaceAll, fields.Everything()),
+		&v1.Service{},
 		resyncPeriod,
-		kframework.ResourceEventHandlerFuncs{
+		cache.ResourceEventHandlerFuncs{
 			AddFunc:    kg.addService,
 			DeleteFunc: kg.deleteService,
 			UpdateFunc: kg.updateService,
@@ -184,7 +185,7 @@ func validateService(ns, name string) bool {
 }
 
 // publicServiceAddrs pulls the public IP's from the Ingres LB's
-func publicServiceAddrs(ingressRouters []kapi.LoadBalancerIngress) []string {
+func publicServiceAddrs(ingressRouters []v1.LoadBalancerIngress) []string {
 	var addrs []string
 	if ingress := ingressRouters; ingress != nil {
 		for _, lb := range ingress {
@@ -203,7 +204,7 @@ func (kg kube2gce) deleteService(obj interface{}) {
 }
 
 func (kg kube2gce) addOrDeleteService(obj interface{}, action serviceAction) {
-	s, ok := obj.(*kapi.Service)
+	s, ok := obj.(*v1.Service)
 	if ok == false {
 		return
 	}
@@ -244,7 +245,7 @@ func (kg kube2gce) addOrDeleteService(obj interface{}, action serviceAction) {
 
 // updateService resolves a services ip list and updates dns if the old and new records differ
 func (kg kube2gce) updateService(oldObj, newObj interface{}) {
-	s, ok := newObj.(*kapi.Service)
+	s, ok := newObj.(*v1.Service)
 	if ok == false {
 		return
 	}
@@ -259,23 +260,27 @@ func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 	}
 
 	fqdn := fmt.Sprintf("%s.%s.%s.", s.Name, s.Namespace, kg.config.domain)
-	oldAddrs := publicServiceAddrs(oldObj.(*kapi.Service).Status.LoadBalancer.Ingress)
+	oldAddrs := publicServiceAddrs(oldObj.(*v1.Service).Status.LoadBalancer.Ingress)
 
 	log.Printf("Got Possible Service update %s", fqdn)
 
-	oldRec := &gdns.ResourceRecordSet{
-		Name:    fqdn,
-		Rrdatas: oldAddrs,
-		Ttl:     int64(TTL),
-		Type:    "A",
+	change := &gdns.Change{}
+	if len(oldAddrs) > 1 {
+		oldRec := &gdns.ResourceRecordSet{
+			Name:    fqdn,
+			Rrdatas: oldAddrs,
+			Ttl:     int64(TTL),
+			Type:    "A",
+		}
+		change.Deletions = []*gdns.ResourceRecordSet{oldRec}
 	}
-
 	newRec := &gdns.ResourceRecordSet{
 		Name:    fqdn,
 		Rrdatas: newAddrs,
 		Ttl:     int64(TTL),
 		Type:    "A",
 	}
+	change.Additions = []*gdns.ResourceRecordSet{newRec}
 
 	if reflect.DeepEqual(newAddrs, oldAddrs) {
 		log.Printf("old and new service have same addresses, will validate with api. %s %v:%v", fqdn, oldAddrs, newAddrs)
@@ -283,10 +288,6 @@ func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 		return
 	}
 
-	change := &gdns.Change{
-		Additions: []*gdns.ResourceRecordSet{newRec},
-		Deletions: []*gdns.ResourceRecordSet{oldRec},
-	}
 	go kg.updateDNS(change)
 }
 
@@ -353,7 +354,7 @@ func (kg kube2gce) checkAndUpdateDNS(newRecord *gdns.ResourceRecordSet) {
 func (kg kube2gce) getHostedZone(domain string) (string, error) {
 	zones, err := kg.gceClient.ManagedZones.List(kg.config.project).Do()
 	if err != nil {
-		return "", fmt.Errorf("GoogleCloud API call failed: %v", err)
+		return "", fmt.Errorf("Google Cloud DNS API call failed: %v", err)
 	}
 
 	for _, z := range zones.ManagedZones {
@@ -362,11 +363,11 @@ func (kg kube2gce) getHostedZone(domain string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("No matching GoogleCloud domain found for domain %s", domain)
+	return "", fmt.Errorf("No matching Google Cloud DNS domain found for domain %s", domain)
 }
 
 // newKubeClient creates a new Kubernetes API Client
-func newKubeClient() (*kclient.Client, error) {
+func newKubeClient() (*kubernetes.Clientset, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
@@ -380,7 +381,7 @@ func newKubeClient() (*kclient.Client, error) {
 	}
 	log.Printf("Using %s for kube api", config.Host)
 
-	client, err := kclient.New(config)
+	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
