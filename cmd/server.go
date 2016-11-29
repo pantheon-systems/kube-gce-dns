@@ -264,19 +264,23 @@ func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 
 	log.Printf("Got Possible Service update %s", fqdn)
 
-	oldRec := &gdns.ResourceRecordSet{
-		Name:    fqdn,
-		Rrdatas: oldAddrs,
-		Ttl:     int64(TTL),
-		Type:    "A",
+	change := &gdns.Change{}
+	if len(oldAddrs) > 1 {
+		oldRec := &gdns.ResourceRecordSet{
+			Name:    fqdn,
+			Rrdatas: oldAddrs,
+			Ttl:     int64(TTL),
+			Type:    "A",
+		}
+		change.Deletions = []*gdns.ResourceRecordSet{oldRec}
 	}
-
 	newRec := &gdns.ResourceRecordSet{
 		Name:    fqdn,
 		Rrdatas: newAddrs,
 		Ttl:     int64(TTL),
 		Type:    "A",
 	}
+	change.Additions = []*gdns.ResourceRecordSet{newRec}
 
 	if reflect.DeepEqual(newAddrs, oldAddrs) {
 		log.Printf("old and new service have same addresses, will validate with api. %s %v:%v", fqdn, oldAddrs, newAddrs)
@@ -284,10 +288,6 @@ func (kg kube2gce) updateService(oldObj, newObj interface{}) {
 		return
 	}
 
-	change := &gdns.Change{
-		Additions: []*gdns.ResourceRecordSet{newRec},
-		Deletions: []*gdns.ResourceRecordSet{oldRec},
-	}
 	go kg.updateDNS(change)
 }
 
