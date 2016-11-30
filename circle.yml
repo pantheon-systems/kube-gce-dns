@@ -1,10 +1,10 @@
 ---
 machine:
   environment:
-    GOVERSION: 1.6.2
+    GOVERSION: 1.7.3
     GOPATH: /home/ubuntu/go_workspace
-    GOROOT: /home/ubuntu/go$GOVERSION
-    PATH: /home/ubuntu/go$GOVERSION/bin:$GOPATH/bin:$PATH
+    GOROOT: /home/ubuntu/go
+    PATH: /home/ubuntu/go/bin:$GOPATH/bin:$PATH
   python:
     version: 2.7.3
   services:
@@ -12,10 +12,8 @@ machine:
 
 dependencies:
   cache_directories:
-    - ../google-cloud-sdk
     - ../go_workspace
-    - ../go1.6.2
-    - vendor
+    - ../go
 
   override:
     - make fix_circle_go
