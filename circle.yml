@@ -1,7 +1,7 @@
 ---
 machine:
   environment:
-    GOVERSION: 1.6.2
+    GOVERSION: 1.7
     GOPATH: /home/ubuntu/go_workspace
     GOROOT: /home/ubuntu/go$GOVERSION
     PATH: /home/ubuntu/go$GOVERSION/bin:$GOPATH/bin:$PATH
@@ -14,7 +14,7 @@ dependencies:
   cache_directories:
     - ../google-cloud-sdk
     - ../go_workspace
-    - ../go1.6.2
+    - ../go1.7
     - vendor
 
   override:
