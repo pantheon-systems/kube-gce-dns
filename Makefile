@@ -78,6 +78,7 @@ prune-common-make:
 	@find devops/make -type f \
 		-not -name common.mk \
 		-not -name common-go.mk \
+		-not -name install-go.sh \
 		-not -name common-docker.mk \
 		-not -name common-docs.mk \
 		-delete
