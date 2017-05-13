@@ -19,7 +19,9 @@ dependencies:
 
 test:
   override:
-    - make test-circle
+    # TODO: switch to test-circle when there are some test files else test-circle will fail on the coverage step
+    #- make test-circle
+    - make test
 
 deployment:
   production:
