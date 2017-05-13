@@ -12,7 +12,7 @@ deps:: cert
 
 # extend the update-makefiles task to remove files we don't need
 update-makefiles::
-	prune-common-make
+	make prune-common-make
 
 # strip out everything from common-makefiles that we don't want.
 prune-common-make:
