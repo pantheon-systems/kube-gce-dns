@@ -21,13 +21,13 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/client-go/1.5/kubernetes"
-	"k8s.io/client-go/1.5/pkg/api"
-	"k8s.io/client-go/1.5/pkg/api/v1"
-	"k8s.io/client-go/1.5/pkg/fields"
-	"k8s.io/client-go/1.5/pkg/util/wait"
-	"k8s.io/client-go/1.5/tools/cache"
-	"k8s.io/client-go/1.5/tools/clientcmd"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/pkg/api"
+	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/pkg/fields"
+	"k8s.io/client-go/pkg/util/wait"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
@@ -157,7 +157,7 @@ func newDNSClient() (*gdns.Service, error) {
 // this should not exit just fire service events to their respective handlers
 func (kg kube2gce) watchForServices() {
 	_, serviceController := cache.NewInformer(
-		cache.NewListWatchFromClient(kg.kubeClient.Core().GetRESTClient(), "services", api.NamespaceAll, fields.Everything()),
+		cache.NewListWatchFromClient(kg.kubeClient.Core().RESTClient(), "services", api.NamespaceAll, fields.Everything()),
 		&v1.Service{},
 		resyncPeriod,
 		cache.ResourceEventHandlerFuncs{

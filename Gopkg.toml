@@ -1,0 +1,28 @@
+
+[[dependencies]]
+  name = "github.com/davecgh/go-spew"
+  revision = "5215b55f46b2b919f50a1df0eaa5886afe4e3b3d"
+
+[[dependencies]]
+  name = "github.com/spf13/cobra"
+  revision = "4c05eb1145f16d0e6bb4a3e1b6d769f4713cb41f"
+
+[[dependencies]]
+  branch = "master"
+  name = "github.com/spf13/viper"
+
+[[dependencies]]
+  branch = "master"
+  name = "golang.org/x/net"
+
+[[dependencies]]
+  name = "golang.org/x/oauth2"
+  revision = "b5adcc2dcdf009d0391547edc6ecbaff889f5bb9"
+
+[[dependencies]]
+  name = "google.golang.org/api"
+  revision = "77e7d383beb96054547729f49c372b3d01e196ff"
+
+[[dependencies]]
+  name = "k8s.io/client-go"
+  version = "^2.0.0"
