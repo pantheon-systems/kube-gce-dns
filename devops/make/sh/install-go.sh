@@ -28,8 +28,10 @@
 #     overide:
 #       - bash scripts/install-go.sh
 #
-
-set -ex
+set -eou pipefail
+CIRCLECI=${CIRCLECI:-}
+GOVERSION=${GOVERSION:-}
+CIRCLE_REPOSITORY_URL=${CIRCLE_REPOSITORY_URL:-}
 
 if [ "$CIRCLECI" != "true" ]; then
   echo "This script meant to only be run on CIRCLECI"
@@ -43,10 +45,11 @@ fi
 
 
 function fu_circle {
-  # convert  CIRCLE_REPOSITORY_URL=https://github.com/user/repo -> github.com/user/repo
+  # convert CIRCLE_REPOSITORY_URL=https://github.com/user/repo -> github.com/user/repo
   local IMPORT_PATH
   IMPORT_PATH=$(sed -e 's#https://##' <<< "$CIRCLE_REPOSITORY_URL")
   sudo rm -rf /usr/local/go
+  # circle creates `.go_workspace` as the GOPATH but we use our own, delete circle's if it exists
   sudo rm -rf /home/ubuntu/.go_workspace || true
   sudo ln -s "$HOME/go"  /usr/local/go
   # remove the destination dir if it exists
@@ -54,26 +57,26 @@ function fu_circle {
     rm -rf "$GOPATH/src/$IMPORT_PATH"
   fi
 
-  # move our new stuf into the destination
+  # move our new stuff into the destination
   pd=$(pwd)
   cd ../
-  
+
   basedir=$(dirname  "$GOPATH/src/$IMPORT_PATH")
-  if [ ! -d "$basedir" ] ; then 
+  if [ ! -d "$basedir" ] ; then
     mkdir -p "$basedir"
   fi
   mv "$pd" "$GOPATH/src/$IMPORT_PATH"
   ln -s "$GOPATH/src/$IMPORT_PATH" "$pd"
 }
 
-if "$HOME/go/bin/go" version | grep -q " go$GOVERSION "; then
-  echo "go $GOVERSION installed preping go import path"
+if "$HOME/go/bin/go" version 2> /dev/null | grep -q " go$GOVERSION" > /dev/null 2>&1 ; then
+  echo "go $GOVERSION installed prepping go import path"
   fu_circle
   exit 0
 fi
 
 gotar=go${GOVERSION}.tar.gz
-curl -o "$HOME/$gotar" "https://storage.googleapis.com/golang/go${GOVERSION}.linux-amd64.tar.gz"
-tar -C "$HOME/" -xzf "$HOME/$gotar"
+curl -o "$HOME/$gotar" "https://storage.googleapis.com/golang/go${GOVERSION}.linux-amd64.tar.gz" > /dev/null 2>&1
+tar -C "$HOME/" -xzf "$HOME/$gotar" > /dev/null
 
 fu_circle

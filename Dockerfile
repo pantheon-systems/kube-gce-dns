@@ -1,5 +1,6 @@
 FROM scratch
-ADD ca-certificates.crt /etc/ssl/certs/
-ADD ./kube-gce-dns /
 
-CMD /kube-gce-dns server
+COPY ca-certificates.crt /etc/ssl/certs/
+COPY ./kube-gce-dns /
+
+ENTRYPOINT ["/kube-gce-dns server"]
