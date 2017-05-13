@@ -66,6 +66,20 @@ push: build_docker ## push container to docker registry
 help: ## print list of tasks and descriptions
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
+# extend the update-makefiles task to remove files we don't need
+update-makefiles::
+	prune-common-make
+
+# strip out everything from common-makefiles that we don't want.
+prune-common-make:
+	@find devops/make -type f -delete \
+		-not -name common.mk \
+		-not -name common-docker.mk \
+		-not -name common-docs.mk
+	@find devops/make -empty -delete
+	@git add devops/make
+	@git commit -C HEAD --amend
+
 .DEFAULT_GOAL := help
 
 .PHONY: deps gvt_install clean test
