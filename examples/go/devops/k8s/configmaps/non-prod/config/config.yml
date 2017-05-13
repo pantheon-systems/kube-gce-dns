@@ -1,0 +1,11 @@
+# This is the non-prod yaml configuration, and it's mounted as a
+# configMap. This file must be committed to your repository, and
+# as such it should not be used for sensitive information like
+# keys and secrets.
+#
+# This configMap will be named `example-app-config`, as the app's
+# name will be concatenated to this directory name by the
+# `update-configmaps` command.
+#
+# See `deployment.template.yml` for more information.
+do_things: false

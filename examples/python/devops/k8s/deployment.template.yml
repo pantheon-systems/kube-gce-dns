@@ -1,0 +1,43 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: example-app
+spec:
+  replicas: __REPLICAS__
+  selector:
+    matchLabels:
+      app: example-app
+      state: serving
+
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+
+  template:
+    metadata:
+      labels:
+        app: example-app
+        build: "__BUILD__"
+        state: serving
+    spec:
+      terminationGracePeriodSeconds: 70
+
+      containers:
+        - image: __IMAGE__
+          name: example-app
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8765
+              protocol: TCP
+          resources:
+            limits:
+              # let it have 1 vCPU
+              cpu: 1
+              memory: 1Gi
+            requests:
+              # we need 0.2 of a vcpu for this to work
+              # (it was limited to 200milicores previously)
+              cpu: 0.2
+              memory: 500Mi

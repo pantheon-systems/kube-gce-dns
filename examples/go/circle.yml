@@ -1,0 +1,178 @@
+---
+# This file contains the set of instructions that CircleCI follows when
+# building your project. It should go in the root of the repository.
+# Full documention is here: https://circleci.com/docs/configuration/
+
+# The `machine` section is "used to adjust the behavior of the virtual machine",
+# which basically means configuring the container that the build runs in.
+machine:
+
+  # The `environment` section contains variables available inside the container.
+  # There are some that are specified here, committed and pushed to Github;
+  # but there are also sensitive secrets that we don't include here. For example,
+  # the GCLOUD_EMAIL and GCLOUD_KEY, as well as the COVERALLS_TOKEN need to be
+  # set in the CircleCI administration interface in the project configuration
+  # settings. If you're starting up a new project, these secrets can be generated
+  # as required, or copied from Onelogin Secure Notes if they're reusable. While
+  # you're there, also add the QUAY_USER and QUAY_PASSWD variables.
+  environment:
+
+    # Go is installed by default in Circle containers, but we don't control the
+    # update cycle of those base containers. We need to lock down the version
+    # used to build our projects, and that is done here using GOVERSION. This
+    # environment variable is picked up by the `install-go.sh` script which is
+    # run by the make task `make deps` in the dependencies phase, below. The
+    # CircleCI container's version of Go is deleted.
+    GOVERSION: 1.8
+
+    # GOPATH and GOROOT are core environment variables that Go relies on. We use
+    # different locations to the base container's version of Go when installing.
+    # You probably don't need to modify these but they are required to be present.
+    # We need to add the Go binary location to the PATH so that we can run some
+    # Go utilities that are installed using `go install`, for example, the `gvt` tool.
+    GOPATH: /home/ubuntu/go_workspace
+    GOROOT: /home/ubuntu/go
+    PATH: /home/ubuntu/go/bin:$GOPATH/bin:$PATH
+
+    # These are Google Container Engine (Kubernetes) variables that specify where
+    # the deployment will go - which cluster, zone and project. It's unlikely that
+    # you'd need to change these from the defaults, currently our apps all go to the
+    # same place.
+    CLUSTER_ID: cluster-01
+    CLOUDSDK_CORE_PROJECT: pantheon-internal
+    CLOUDSDK_COMPUTE_ZONE: us-central1-b
+
+    # Custom per-project variables could be included below, but these should be
+    # build or testing related, don't use this section to configure your application.
+    # For application config, a ConfigMap should be used.
+    MY_VARIABLE: localhost:8800
+
+  # Your Go project might depend on other languages to build. Google Cloud SDK (gcloud),
+  # which is used to deploy to Kubernetes, uses Python. Since we update the version
+  # of gcloud that's already in the container, it's fine to leave off this explicit
+  # dependency on Python, and doing so saves build time since Circle doesn't create and
+  # cache a `virtualenv` for you.
+  #
+  # python:
+  #   version: 2.7.11
+
+  # Running Docker commands in Circle requires us to add it explicitly as a service.
+  # We use Docker in Circle to build images for pushing to a container registry, and
+  # ultimately deploy them to Kubernetes. Docker is also useful if your tests need
+  # some services running in the Circle container - you can pull and run images as
+  # you might do locally. You can also run your application's tests inside the docker
+  # container if you choose, but this is more useful for other languages.
+  #
+  # There are several caveats to Circle's Docker support, most notably for us are:
+  # - Intermediate images are not handled too well, so as a workaround add --rm=false
+  #   to any docker commands. The errors are "unable to delete intermediate repository"
+  #   and are safe to ignore if you don't use the workaround.
+  # - There's no caching of images you pull, which means it's really slow. Circle
+  #   recommends a workaround in their documentation but we've found their method
+  #   to be even slower.
+  #
+  # The CircleCI documentation of the above caveats is here: https://circleci.com/docs/docker/
+  services:
+    - docker
+
+# The `dependencies` section is where Circle says you can "install your project’s
+# language-specific dependencies". We use it to install all dependencies for building
+# and deploying applications.
+dependencies:
+
+  # We attempt to cache directories between builds, which means that Circle should
+  # tar these up and untar them for the next build. There's currently a bug that seems
+  # to prevent this from happening correctly. We suspect it might be because we nuke
+  # the Circle container's version of Go.
+  cache_directories:
+    # /home/ubuntu/go matches the environment setting for `GOROOT` above.
+    - /home/ubuntu/go
+    # /home/ubuntu/go_workspace matches the environment setting for `GOPATH` above.
+    - /home/ubuntu/go_workspace
+    # The vendor directory is where the `gvt` tool clones the project dependencies.
+    - vendor
+
+  # Circle has an inference system where it guesses what dependencies to install,
+  # based on the code it finds in your project. We override that mechanism entirely,
+  # by specifying this `override` section.
+  override:
+
+    # The common Makefiles are used to roll up several operations into one call.
+    # You have a base project Makefile that includes other Makefiles, and by virtue
+    # of being included those will hook into common calls to do the work they need to do.
+    # For example, there's a hook in `common-kube.mk` that runs when `make deps-circle`
+    # is called. This causes the Kube dependencies to be installed. There's another hook in
+    # `common-go.mk` that installs Go and another hook that installs Pants,
+    # etc.
+    #
+    # One call to `make deps-circle` will call all the hooks in every Makefile that's
+    # included in your project's root Makefile. For this example, we will install
+    # gcloud (Kube) and Go into the container by making this single call. It also
+    # triggers the deletion of the `vendor` directory, and a rebuild using the `gvt` tool.
+    - make deps-circle
+
+    # The same principle applies to `deps-coverage`. In this case we've included
+    # `common-go.mk` in our project's Makefile, so that the `goveralls` tool will be
+    # installed here. Any other included Makefiles (`common-x.mk`) that implement
+    # `deps-coverage` would also be called.
+    - make deps-coverage
+
+# The `test` section controls how Circle runs the tests.
+test:
+
+  # But once again, it uses the inference engine that isn't suitable for our needs,
+  # and we have to provide our own steps in this `override` section.
+  override:
+
+    # The `test-circle` task for Go will run the linter, run all tests with the race
+    # detector switched on, and then report test coverage.
+    - make test-circle
+
+# The `deployment` section controls how Circle deploys the code.
+deployment:
+
+  # You can call the deployment whatever you want, and have multiple deployment
+  # subsections that trigger based on which branch is being built. These names
+  # must be unique. If multiple sections specify the same branches, the first
+  # match is used. This is only triggered when tests pass (green build).
+  testing:
+
+    # We want to test the deployment before pushing the master branch.
+    branch:
+      - /^(?!master).*/
+    commands:
+      # Deploys to the namespace sandbox-$CIRCLE_PROJECT-$CIRCLE_BRANCH on non-prod.
+      # This command pulls down pants and instatiates an integration
+      # environment. If you add PANTS_INCLUDE, it will only install the
+      # dependencies you specify (be sure to specify the current project so
+      # that secrets are set. Pants flags can be overridden altogether by
+      # setting the FLAGS variable.
+      - make init-circle-pants PANTS_INCLUDE=your-repo-name,other-dependencies
+      - make deploy check-deployment-status
+
+  production:
+
+    # We want to always deploy the master branch.
+    branch:
+      - master
+      - release-test
+
+    # The commands executed to deploy the code.
+    commands:
+
+      # The common Makefiles don't include default `deploy` hooks.
+      # This `make deploy` command is controlled entirely from your project's
+      # base Makefile. Continue reading that file for more information.
+      #
+      # We want to deploy our app to the `template-sandbox` namespace, which
+      # includes it when developers create or update their sandboxes.
+      # It's important that the deploy to `template-sandbox` happens first, as
+      # we can check that it was successful before attempting the same thing
+      # on production. This is done by the second command `check-deployment-status`,
+      # which is defined in our project's Makefile.
+      - make deploy check-deployment-status KUBE_NAMESPACE=template-sandbox
+
+      # Running without a KUBE_NAMESPACE will cause common makefiles to infer
+      # the correct namespace. For master branch, this will deploy to `production`.
+      - make deploy check-deployment-status
+

@@ -1,0 +1,208 @@
+# vim: set ft=yaml:
+# -*- mode: yaml -*-
+---
+
+# Kubernetes deployment template. The general documentation for these is here:
+# - https://kubernetes.io/docs/user-guide/deployments/
+#
+# This file is used as a template and the strings that are surrounded by
+# double-underscores (e.g. __VAR__) are replaced with real values by `sed`
+# in the project's root Makefile in the `deploy` step.
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  # The name of the application (matching the value of APP in the project's Makefile),
+  # is used here as a metadata field. It's also used several times below, as a label
+  # and the name of the container. These should all be the same.
+  name: example-app
+
+spec:
+  replicas: __REPLICAS__
+  selector:
+    matchLabels:
+      app: example-app
+      state: serving
+
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+
+  template:
+    metadata:
+      # It's important to label your application's Kubernetes components
+      # properly, they should all be the same as the APP variable in the project
+      # Makefile. This is because the `pants` tool uses labels to make copies
+      # of applications into developer sandboxes.
+      labels:
+        app: example-app
+        build: "__BUILD__"
+        state: serving
+    spec:
+      # Kubernetes will send a SIGTERM to the application when killing it, and wait
+      # for this number of seconds before forcing shutdown with SIGKILL.
+      terminationGracePeriodSeconds: 20
+
+      # The `volumes` section specfies volumes that are available for mounting
+      # inside the containers, e.g. secrets and configMaps.
+      volumes:
+
+        # The Pantheon CA cert is our own authority that we use to sign certificates
+        # our services use to communicate with each other. Most services will require
+        # this CA in order to establish connections, and thus it's shared between
+        # all of them in Kubernetes, and different for production and sandboxes, so
+        # that we don't accidentally get requests going to the wrong environment.
+        #
+        # In summary: in the `production` Kube namespace, the `pantheon-ca-cert` secret
+        # contains the CA for production services (also known as Helios), and in all
+        # other namespaces (template-sandbox), the `pantheon-ca-cert` secret contains
+        # the shared CA for sandboxes and oneboxes. We don't have to do anything more
+        # than listing it here as a volume and then mounting it (in volumeMounts below).
+        - name: pantheon-ca-cert
+          secret:
+            secretName: pantheon-ca-cert
+
+        # It's a common requirement for an application to make HTTPS requests to the outside
+        # world, in order to do this, it needs a bundle of CA certs. These are mounted as a
+        # hostPath, meaning we mount the host machine's bundle dir as a read-only target inside
+        # the container. This bundle is usually provided by Linux Docker images, but because
+        # we're using `FROM scratch` in our Dockerfile, there's nothing in there by default.
+        - name: ssl-cert-chain
+          hostPath:
+            path: /etc/ssl/certs
+
+        # A ConfigMap named `example-app-config` is created and updated when Circle
+        # builds and deploys the project. This is done by the `deploy` command in `Makefile`.
+        # We create configMaps by creating files in the appropriate location, and for this app
+        # we have a single configMap that is generated from the files in two places:
+        # - `devops/k8s/configmaps/production/config/config.yml`
+        # - `devops/k8s/configmaps/non-prod/config/config.yml`
+        #
+        # Documentation on this feature is found here:
+        # - https://github.com/pantheon-systems/common_makefiles#update-configmaps
+        #
+        # In order to read the file `config.yml` in the application, we specify the configMap
+        # as a volume here and then mount it below in the `volumeMounts` section.
+        - name: example-app-config
+          configMap:
+            name: example-app-config
+
+        # Secrets are not committed to Github, and are typically created by a
+        # developer on their local workstation. It's recommended that you either create
+        # a make command that performs these steps, or document this process well
+        # in your README.md. You can see how these keys are created by looking at the
+        # command `create-secrets` in `Makefile`.
+        #
+        # Documentation on how this feature works is found here:
+        # - https://github.com/pantheon-systems/common_makefiles#update-secrets
+        - name: example-app-keys
+          secret:
+            secretName: example-app-keys
+
+      containers:
+
+        # The image used for this container will usually be a quay.io link, and contain
+        # the Circle build number, e.g. `quay.io/getpantheon/example-app:1234`
+        - image: __IMAGE__
+          name: example-app
+
+          # Pantheon policy is for all production applications to use 'IfNotPresent' in
+          # order to maximize uptime. The failure scenario we are avoiding is the outage
+          # of the container registry preventing applications from being able to be scheduled
+          # and executed by kube. You may use `kubectl edit deployment <name>` to toggle the
+          # value when working on a sandbox / dev pod.
+          imagePullPolicy: IfNotPresent
+
+          # Probes are used to monitor the "liveness" and "readiness" of our application.
+          # We use the `httpGet` probe, which cause Kube to perform simple HTTP requests to
+          # the specified path and port. These must be handled by the application, using
+          # an HTTP server (e.g. http.Server in the Go stdlib).
+          #
+          # - https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/
+          # - https://kubernetes.io/docs/api-reference/v1/definitions/#_v1_probe
+          #
+          # Here we define an HTTP `readiness` probe. If the probe fails, Kube will not direct
+          # traffic to the pod. This is useful if the app is busy or otherwise in a state
+          # in which it cannot serve traffic. The app will not be killed by Kube if this probe
+          # fails, as it is expected to recover or come online in due course. It simply does
+          # not receive traffic. This port is exposed in the Dockerfile, but is not mapped
+          # in the Service, so is not accessible from the outside world.
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8080
+            initialDelaySeconds: 15
+
+          # The `liveness` probe is used by Kube to decide when to forcefully kill the
+          # pod. Sometimes, long-running applications fail or transition to broken states
+          # and they need to be restarted. Kube does this automatically when the liveness
+          # check fails. Be careful about what your application does in the `/liveness`
+          # HTTP handler. It should probably just return 200 OK immediately, and only error
+          # when the application has crashed or is unrecoverable.
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 8080
+            initialDelaySeconds: 15
+
+          # It's possible to override the default ENTRYPOINT in the Dockerfile using
+          # the `command` section here. You can also add arguments. If the default
+          # action in the Dockerfile is sufficient, which it usually is, this is not necessary.
+          # command:
+          #   - /example-app
+          # args:
+          #   - -d
+
+          # Our app will be constrained to certain limits when running in Kubernetes,
+          # appropriate to the kinds of tasks it needs to perform. We specify what
+          # those limits are here in the `resources` section. This is a detailed topic
+          # covered in depth here: https://kubernetes.io/docs/user-guide/compute-resources/
+          resources:
+            # `requests` describes the minimum amount of compute resources required.
+            requests:
+              cpu: 0.2
+              memory: 100Mi
+            # `limits` describes the maximum amount of compute resources allowed.
+            limits:
+              cpu: 1
+              memory: 250Mi
+
+          # The `env` section injects environment variables into the container.
+          env:
+            # Here we set the value of the environment variable `EXAMPLE_APP_OPTION_A` to
+            # be the string `enable`.
+            - name: EXAMPLE_APP_OPTION_A
+              value: enable
+
+            # It's possible to pull the values for these environment variables directly from
+            # secrets or configMaps. Here `EXAMPLE_APP_OPTION_B` is set to the value of
+            # the key `option-b` found in the `pantheon-config` configMap. It is not necessary
+            # to explicitly include the configMap `pantheon-config` in the `volumes` section.
+            - name: EXAMPLE_APP_OPTION_B
+              valueFrom:
+                configMapKeyRef:
+                  name: pantheon-config
+                  key: option-b
+
+          # `volumeMounts` specifies mount locations for the `volumes` we included above.
+          # These are available inside the container.
+          volumeMounts:
+
+            # Mounting the secrets makes them available as regular files in the container.
+            # This volumeMount allows your application code to read the CA file at the location
+            # `/secrets/pantheon-ca-cert/ca.crt`.
+            - name: pantheon-ca-cert
+              mountPath: /secrets/pantheon-ca-cert
+
+            # CA Certificates bundle, see discussion above in the `volumes` section.
+            - name: ssl-cert-chain
+              mountPath: /etc/ssl/certs
+
+            # ConfigMap file, see discussion above in the `volumes` section.
+            - name: example-app-config
+              mountPath: /configmaps/config
+
+            # Secret files, see discussion above in the `volumes` section.
+            - name: example-app-keys
+              mountPath: /secrets/example-app-keys

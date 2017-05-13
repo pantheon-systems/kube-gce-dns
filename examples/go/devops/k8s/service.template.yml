@@ -1,0 +1,59 @@
+# vim: set ft=yaml:
+# -*- mode: yaml -*-
+---
+
+# Kubernetes Service template. The general documentation for these is here:
+# - https://kubernetes.io/docs/user-guide/services/
+#
+# You can think of a Service as the public IP address and open ports for your
+# application. Technically speaking, they are an "abstraction which defines a
+# logical set of Pods and a policy by which to access them".
+#
+# We have an application running in Kubernetes (kube-gce-dns) that automatically
+# assigns DNS names to Services. Once this file is deployed and active (which can take
+# a few minutes - follow along with `kubectl get service`), we should get a DNS name
+# that looks like `example-app.<namespace>.gce.panth.io`, and we can curl it.
+#
+# curl -v https://example-app.production.gce.panth.io/healthCheck
+#
+# When other services running in Kubernetes want to communicate with this one,
+# they should do a lookup on https://example-app/, which resolves to this app
+# running in the current namespace.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: example-app
+
+  # It's important to label your application's Kubernetes components
+  # properly, the labels should all be the same as the APP variable in the project
+  # Makefile. This is because the `pants` tool uses labels to make copies
+  # of applications into developer sandboxes.
+  labels:
+    app: example-app
+
+spec:
+  # Think of this as a load balancer that has as a backend all pods that are tagged
+  # with your application's unique tag, in this case it's "example-app".
+  type: LoadBalancer
+
+  ports:
+    # We're listening to the outside world on 443 which is the default HTTPS port.
+    # This is helpful if you want to connect to your service conveniently from a
+    # web browser or curl-like application, you can just specify "https://..."
+    #
+    # The `targetPort` is the port that must be exposed from the container, this
+    # is done in the Dockerfile, and they must match in order to connect.
+    #
+    # It's possible to specify multiple listening ports here.
+    - port: 443
+      targetPort: 4443
+
+  # The selector must match your app's name, which is defined by the APP variable
+  # at the top of the project's Makefile. This directs all traffic that reaches
+  # this service to your app. Selectors on services should have at least 2 values.
+  # Usually we add `state: serving` on top of `app`, so that we have an easy way
+  # to pull a pod out of a service for debugging, if needed.
+  selector:
+    app: example-app
+    state: serving

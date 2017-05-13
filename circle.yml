@@ -1,0 +1,29 @@
+# This circle.yml builds and tests the utilities in common-makefiles
+# and should not be used as a template for your project. See the `examples`
+# directory for sample circle.yml files.
+---
+machine:
+  environment:
+    # vars for deployment on google container engine
+    CLOUDSDK_CORE_PROJECT: pantheon-internal
+    CLUSTER_ID: cluster-01
+    CLOUDSDK_COMPUTE_ZONE: us-central1-b
+    GOVERSION: 1.8
+    GOPATH: /home/ubuntu/go_workspace
+    GOROOT: /home/ubuntu/go
+    PATH: /home/ubuntu/go/bin:$GOPATH/bin:$PATH:/opt/google-cloud-sdk/bin:$HOME/.cabal/bin
+
+  services:
+    - docker
+
+dependencies:
+  cache_directories:
+    - ~/.cabal
+  pre:
+    - make deps-circle-kube deps-circle-shell deps-circle-go
+
+test:
+  override:
+    - make test-common-lint
+    - make test-common
+    - make clean-common-make
