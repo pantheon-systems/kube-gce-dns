@@ -2,6 +2,8 @@ kube to GCE DNS
 ----
 Register kube public services in a gce domain with kube namespaces.
 
+[![Unsupported](https://img.shields.io/badge/Pantheon-Unsupported-yellow?logo=pantheon&color=FFDC28)](https://pantheon.io/docs/oss-support-levels#unsupported)
+
 Usage
 -----
 
